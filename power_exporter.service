@@ -1,0 +1,12 @@
+[Unit]
+Description=Power Exporter
+After=network.target
+
+[Service]
+Type=simple
+User=daemon
+ExecStart=/usr/local/lib/powermeter/powermeter.py
+
+[Install]
+WantedBy=multi-user.target
+
