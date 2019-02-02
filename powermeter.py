@@ -92,5 +92,5 @@ if __name__ == '__main__':
   start_gathering(args.meter_name, args.device)
 
   # Start up the server to expose the metrics.
-  start_http_server(args.port)
+  start_http_server(int(args.port))
 
