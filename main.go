@@ -28,27 +28,32 @@ var options struct {
 }
 
 var (
-	gaugeWork = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	gaugeReading = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "powermeter",
-		Name:      "work",
-		Help:      "Current meter reading for consumed energy (in Wh)",
+		Name:      "reading",
+		Help:      "Current meter reading for consumed energy (unit depends on OBIS id)",
 	},
 		[]string{
 			//manual name of the meter, to distinguish between multiple sensors
 			"meter_name",
-			//id of the meter, like 1.8.1 for consumed electrical energy, first tariff
+			//obis id of the meter, like 1.8.1 for consumed electrical energy, first tariff
 			"meter_id",
 		})
-	gaugePower = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	gatheringDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
 		Namespace: "powermeter",
-		Name:      "power",
-		Help:      "Current power consumption (in W)",
+		Name:      "gatheringduration",
+		Help:      "The duration of data gatherings",
 	},
 		[]string{
 			//manual name of the meter, to distinguish between multiple sensors
 			"meter_name",
 		})
 )
+
+type meterReading struct {
+	name  string
+	value float64
+}
 
 func main() {
 	_, err := flags.Parse(&options)
@@ -60,7 +65,12 @@ func main() {
 		port = openConnection()
 		defer port.Close()
 		for {
-			gatherData()
+			ok := gatherData()
+			if !ok {
+				log.Printf("Data Gathering failed, resetting port")
+				port.Close()
+				port = openConnection()
+			}
 			time.Sleep(time.Duration(options.Interval) * time.Second)
 		}
 	}()
@@ -89,20 +99,28 @@ func openConnection() io.ReadWriteCloser {
 }
 
 func readUntil(hexNeedle string) []byte {
-	buffer := make([]byte, 500)
-	result := make([]byte, 0, 500)
+	buffer := make([]byte, 250)
+	result := make([]byte, 0, 1024)
 	targetBytes, err := hex.DecodeString(hexNeedle)
 	if err != nil {
 		log.Fatalf("Failed to decode target string: %v", err)
 	}
 
+	//TODO wait for start delimiter 
 	for !bytes.Contains(result, targetBytes) {
 		c, err := port.Read(buffer)
 		if err != nil {
-			log.Fatalf("Read error: %v", err)
+			log.Printf("Read error: %v", err)
+			return nil
 		}
 		log.Printf("Read %d bytes", c)
 		log.Println(hex.EncodeToString(buffer[:c]))
+		if bytes.Contains(buffer, targetBytes) {
+			idx := bytes.Index(buffer, targetBytes)
+			result = append(result, buffer[:idx]...)
+			log.Printf("Last read contained delimiter at %d, skipping %d bytes, returning result with %d bytes", idx, c-idx, len(result))
+			return result
+		}
 		result = append(result, buffer[:c]...)
 		log.Printf("appended result is now %d bytes", len(result))
 	}
@@ -110,20 +128,23 @@ func readUntil(hexNeedle string) []byte {
 	return result
 }
 
-func gatherData() {
+func gatherData() bool {
+	timer := prometheus.NewTimer(gatheringDuration.WithLabelValues(options.MeterName))
+	defer timer.ObserveDuration()
+
 	log.Println("Gathering metrics")
 	message := readUntil("1b1b1b1b1a")
+	if message == nil {
+		log.Printf("Failed to read message, skipping")
+		return false
+	}
 	log.Printf("Read full message %s", hex.EncodeToString(message))
-	work0 := extractData(message, mustDecodeStringToHex("77070100010800ff0101621e52ff56"), 15, 5)
-	work1 := extractData(message, mustDecodeStringToHex("77070100010801ff0101621e52ff56"), 15, 5)
-	work2 := extractData(message, mustDecodeStringToHex("77070100010802ff0101621e52ff56"), 15, 5)
-	power := extractData(message, mustDecodeStringToHex("77070100100700ff0101621b52ff55"), 15, 4)
-	log.Printf("Work0 is %d, Work1 is %d, Work2 is %d, Power is %d", work0, work1, work2, power)
-	log.Println("Done gathering metrics")
-	gaugeWork.WithLabelValues(options.MeterName, "1.8.0").Set(float64(work0))
-	gaugeWork.WithLabelValues(options.MeterName, "1.8.1").Set(float64(work1))
-	gaugeWork.WithLabelValues(options.MeterName, "1.8.2").Set(float64(work2))
-	gaugePower.WithLabelValues(options.MeterName).Set(float64(power))
+
+	for _, meterReading := range extractMeterReadings(message) {
+		log.Printf("Recording meter %s with value %f", meterReading.name, meterReading.value)
+		gaugeReading.WithLabelValues(options.MeterName, meterReading.name).Set(meterReading.value)
+	}
+	return true
 }
 
 func mustDecodeStringToHex(data string) []byte {
@@ -134,18 +155,45 @@ func mustDecodeStringToHex(data string) []byte {
 	return res
 }
 
-func extractData(message []byte, needle []byte, offset int, length int) int64 {
-	index := bytes.Index(message, needle)
-	if index >= 0 {
-		data := message[index+offset : index+offset+length]
-		log.Printf("Decoding data %v", hex.EncodeToString(data))
-		return decodeBytes(data) / options.Factor
+func extractMeterReadings(message []byte) []meterReading {
+	result := make([]meterReading, 0, 5)
+	dataSplice := bytes.Split(message, mustDecodeStringToHex("77070100"))
+	for _, data := range dataSplice[1:] {
+		log.Printf("Decoding message %x", data)
+		if len(data) < 12 {
+			log.Printf("Data chunk too small, %d<12", len(data))
+			continue
+		}
+		obis := fmt.Sprintf("%d.%d.%d", data[0], data[1], data[2])
+		log.Printf("Decoded obis %s", obis)
+		size := mapByteCount(data[10])
+		if size > 0 {
+			log.Printf("Decoded size %d", size)
+			value := float64(decodeBytes(data[11:11+size])) / float64(options.Factor)
+			log.Printf("Decoded value %f", value)
+			newReading := meterReading{name: obis, value: value}
+			result = append(result, newReading)
+		} else {
+			log.Print("Skipping message because of undecoded size")
+		}
 	}
+	return result
+}
+
+func mapByteCount(sizeInfo byte) int {
+	switch sizeInfo {
+	case '\x55':
+		return 4
+	case '\x56':
+		return 5
+	}
+	log.Printf("Tried to decode unknown sizeInfo: %x", sizeInfo)
 	return 0
 }
 
 func decodeBytes(raw []byte) int64 {
 
+	log.Printf("Decoding bytes %x", raw)
 	buffer := make([]byte, 8)
 	sizeDiff := len(buffer) - len(raw)
 	for index, value := range raw {
