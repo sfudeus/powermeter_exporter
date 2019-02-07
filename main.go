@@ -26,6 +26,7 @@ var options struct {
 	MeterName string `long:"metername" description:"The name of your meter, to uniquely name them if you have multiple"`
 	Factor    int64  `long:"factor" description:"Reduction factor for all readings" default:"1"`
 	Debug     bool   `long:"debug" description:"Activate debug mode"`
+	KeepAlive	bool	 `long:"keepalive" description:"When true, keep tty connection open between reads"`
 }
 
 var (
@@ -49,6 +50,25 @@ var (
 			//manual name of the meter, to distinguish between multiple sensors
 			"meter_name",
 		})
+	connectionSetups = promauto.NewSummaryVec(prometheus.SummaryOpts{
+		Namespace: "powermeter",
+		Name:      "connection_setup",
+		Help:      "The duration of connection setups",
+	},
+		[]string{
+			//manual name of the meter, to distinguish between multiple sensors
+			"meter_name",
+	})
+	connectionResets = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "powermeter",
+		Name:      "connection_reset",
+		Help:      "The number of connections resets",
+	},
+		[]string{
+			//manual name of the meter, to distinguish between multiple sensors
+			"meter_name",
+
+	})
 )
 
 type meterReading struct {
@@ -63,14 +83,17 @@ func main() {
 	}
 
 	go func() {
-		port = openConnection()
-		defer port.Close()
+		if (options.KeepAlive) {
+			port = openConnection()
+			defer port.Close()
+		}
 		for {
 			ok := gatherData()
-			if !ok {
+			if !ok && options.KeepAlive {
 				log.Printf("Data Gathering failed, resetting port")
 				port.Close()
 				port = openConnection()
+				connectionResets.WithLabelValues(options.MeterName).Inc()
 			}
 			time.Sleep(time.Duration(options.Interval) * time.Second)
 		}
@@ -80,6 +103,9 @@ func main() {
 }
 
 func openConnection() io.ReadWriteCloser {
+	timer := prometheus.NewTimer(connectionSetups.WithLabelValues(options.MeterName))
+	defer timer.ObserveDuration()
+
 	// Set up options.
 	options := serial.OpenOptions{
 		PortName:          options.Device,
@@ -146,6 +172,11 @@ func readUntil(startSequence []byte, stopSequence []byte) []byte {
 func gatherData() bool {
 	timer := prometheus.NewTimer(gatheringDuration.WithLabelValues(options.MeterName))
 	defer timer.ObserveDuration()
+
+	if ! options.KeepAlive {
+		port = openConnection()
+		defer port.Close()
+	}
 
 	log.Println("Gathering metrics")
 	message := readUntil(mustDecodeStringToHex("1b1b1b1b01010101"), mustDecodeStringToHex("1b1b1b1b1a"))
