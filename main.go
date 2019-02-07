@@ -85,13 +85,13 @@ func main() {
 	go func() {
 		if (options.KeepAlive) {
 			port = openConnection()
-			defer port.Close()
+			defer closeConnection()
 		}
 		for {
 			ok := gatherData()
 			if !ok && options.KeepAlive {
 				log.Printf("Data Gathering failed, resetting port")
-				port.Close()
+				closeConnection()
 				port = openConnection()
 				connectionResets.WithLabelValues(options.MeterName).Inc()
 			}
@@ -118,11 +118,17 @@ func openConnection() io.ReadWriteCloser {
 	}
 
 	// Open the port.
+	logDebug("Connecting serial port...")
 	port, err := serial.Open(options)
 	if err != nil {
 		log.Fatalf("serial.Open: %v", err)
 	}
 	return port
+}
+
+func closeConnection() {
+	logDebug("Closing serial port")
+	port.Close()
 }
 
 func readUntil(startSequence []byte, stopSequence []byte) []byte {
@@ -156,9 +162,9 @@ func readUntil(startSequence []byte, stopSequence []byte) []byte {
 		}
 		logDebug("Read %d bytes", c)
 		logDebug(hex.EncodeToString(buffer[:c]))
-		if bytes.Contains(buffer, stopSequence) {
-			idx := bytes.Index(buffer, stopSequence)
-			result = append(result, buffer[:idx]...)
+		if bytes.Contains(buffer[:c], stopSequence) {
+			idx := bytes.Index(buffer[:c], stopSequence)
+			result = append(result, buffer[:idx+len(stopSequence)]...)
 			log.Printf("Last read contained delimiter at %d, skipping %d bytes, returning result with %d bytes", idx, c-idx, len(result))
 			return result
 		}
@@ -166,7 +172,8 @@ func readUntil(startSequence []byte, stopSequence []byte) []byte {
 		logDebug("appended result is now %d bytes", len(result))
 	}
 
-	return result
+	finalStopIdx := bytes.Index(result, stopSequence)
+	return result[:finalStopIdx+len(stopSequence)]
 }
 
 func gatherData() bool {
@@ -175,7 +182,7 @@ func gatherData() bool {
 
 	if ! options.KeepAlive {
 		port = openConnection()
-		defer port.Close()
+		defer closeConnection()
 	}
 
 	log.Println("Gathering metrics")
