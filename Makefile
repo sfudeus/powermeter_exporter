@@ -4,7 +4,7 @@ GOCLEAN := go clean
 GOFMT := go fmt -w
 
 BUILD_DIR := build
-PKG_NAME := isg_exporter
+PKG_NAME := powermeter_exporter
 OS := linux darwin
 
 .DEFAULT_GOAL: all
