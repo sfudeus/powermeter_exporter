@@ -6,3 +6,5 @@ require (
 	github.com/prometheus/client_golang v0.9.2
 	golang.org/x/sys v0.0.0-20190201152629-afcc84fd7533 // indirect
 )
+
+go 1.13
