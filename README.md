@@ -19,3 +19,8 @@ Help Options:
   -h, --help       Show this help message
 
 ```
+
+Docker image
+---
+
+A recent docker image (multiarch amd64,arm/v7) is automatically built for each release at sfudeus/powermeter_exporter:$TAG.

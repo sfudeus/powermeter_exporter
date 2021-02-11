@@ -2,12 +2,14 @@
 
 set -eu
 
-if [ $# -ne 1 ]; then
-  echo "Usage: $0 <go_version>";
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+  echo "Usage: $0 <go_version> (--push)";
   exit 1
 fi
 
-GO_VERSION=$1
+GO_VERSION=${1:-}
+PUSH=${2:-}
+
 PRG_VERSION=$(git describe --tags --dirty)
 IMAGE_VERSION=${PRG_VERSION}_${GO_VERSION}
 IMAGE_REPO=sfudeus/powermeter_exporter
