@@ -13,4 +13,9 @@ IMAGE_VERSION=${PRG_VERSION}_${GO_VERSION}
 IMAGE_REPO=sfudeus/powermeter_exporter
 
 echo "Building $IMAGE_REPO:$IMAGE_VERSION"
-docker buildx build --build-arg "GO_VERSION=${GO_VERSION}" --platform linux/amd64 --platform linux/arm/v7 -t "${IMAGE_REPO}:${IMAGE_VERSION}" --push .
+docker buildx build --build-arg "GO_VERSION=${GO_VERSION}" --platform linux/amd64 --platform linux/arm/v7 -t "${IMAGE_REPO}:${IMAGE_VERSION}" .
+
+if [[ "${PUSH}" == "--push" ]]; then
+  echo "Pushing version $IMAGE_VERSION"
+  docker buildx build --build-arg "GO_VERSION=${GO_VERSION}" --platform linux/amd64 --platform linux/arm/v7 -t "${IMAGE_REPO}:${IMAGE_VERSION}" --push .
+fi
