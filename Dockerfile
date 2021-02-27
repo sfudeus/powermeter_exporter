@@ -1,11 +1,12 @@
-ARG GO_VERSION=1.14
+ARG GO_VERSION=1.15.8
 FROM --platform=$BUILDPLATFORM golang:$GO_VERSION AS builder
+
 ARG TARGETOS
 ARG TARGETARCH
 
+RUN mkdir /build
+COPY *.go go.* /build/
 WORKDIR /build
-ADD . /build
-
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o powermeter_exporter
 
 FROM scratch
