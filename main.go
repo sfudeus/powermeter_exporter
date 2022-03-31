@@ -5,16 +5,17 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"github.com/jacobsa/go-serial/serial"
-	"github.com/jessevdk/go-flags"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/jacobsa/go-serial/serial"
+	"github.com/jessevdk/go-flags"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var port io.ReadWriteCloser
@@ -26,7 +27,7 @@ var options struct {
 	MeterName string `long:"metername" description:"The name of your meter, to uniquely name them if you have multiple"`
 	Factor    int64  `long:"factor" description:"Reduction factor for all readings" default:"1"`
 	Debug     bool   `long:"debug" description:"Activate debug mode"`
-	KeepAlive	bool	 `long:"keepalive" description:"When true, keep tty connection open between reads"`
+	KeepAlive bool   `long:"keepalive" description:"When true, keep tty connection open between reads"`
 }
 
 var (
@@ -58,7 +59,7 @@ var (
 		[]string{
 			//manual name of the meter, to distinguish between multiple sensors
 			"meter_name",
-	})
+		})
 	connectionResets = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "powermeter",
 		Name:      "connection_reset",
@@ -67,8 +68,7 @@ var (
 		[]string{
 			//manual name of the meter, to distinguish between multiple sensors
 			"meter_name",
-
-	})
+		})
 )
 
 type meterReading struct {
@@ -83,7 +83,7 @@ func main() {
 	}
 
 	go func() {
-		if (options.KeepAlive) {
+		if options.KeepAlive {
 			port = openConnection()
 			defer closeConnection()
 		}
@@ -180,7 +180,7 @@ func gatherData() bool {
 	timer := prometheus.NewTimer(gatheringDuration.WithLabelValues(options.MeterName))
 	defer timer.ObserveDuration()
 
-	if ! options.KeepAlive {
+	if !options.KeepAlive {
 		port = openConnection()
 		defer closeConnection()
 	}
@@ -210,6 +210,7 @@ func mustDecodeStringToHex(data string) []byte {
 
 func extractMeterReadings(message []byte) []meterReading {
 	result := make([]meterReading, 0, 5)
+	// split on list start and obis prefix
 	dataSplice := bytes.Split(message, mustDecodeStringToHex("77070100"))
 	for _, data := range dataSplice[1:] {
 		logDebug("Decoding message %x", data)
@@ -219,10 +220,20 @@ func extractMeterReadings(message []byte) []meterReading {
 		}
 		obis := fmt.Sprintf("%d.%d.%d", data[0], data[1], data[2])
 		logDebug("Decoded obis %s", obis)
-		size := mapByteCount(data[10])
+		// split on unit defintion (Wh)
+		dataSplice2 := bytes.Split(data, mustDecodeStringToHex("621e"))
+
+		if len(dataSplice2) < 2 {
+			logDebug("Skipping obis entry without expected unit")
+			continue
+		}
+		data = dataSplice2[1]
+		logDebug("Decoding 2nd part of message %x", data)
+		size := data[2] & 0x0f
+
 		if size > 0 {
 			logDebug("Decoded size %d", size)
-			value := float64(decodeBytes(data[11:11+size])) / float64(options.Factor)
+			value := float64(decodeBytes(data[3:3+size])) / float64(options.Factor)
 			logDebug("Decoded value %f", value)
 			newReading := meterReading{name: obis, value: value}
 			result = append(result, newReading)
@@ -233,25 +244,19 @@ func extractMeterReadings(message []byte) []meterReading {
 	return result
 }
 
-func mapByteCount(sizeInfo byte) int {
-	switch sizeInfo {
-	case '\x55':
-		return 4
-	case '\x56':
-		return 5
-	}
-	logDebug("Tried to decode unknown sizeInfo: %x", sizeInfo)
-	return 0
-}
-
 func decodeBytes(raw []byte) int64 {
 
 	logDebug("Decoding bytes %x", raw)
 	buffer := make([]byte, 8)
 	sizeDiff := len(buffer) - len(raw)
-	for index, value := range raw {
-		buffer[sizeDiff+index] = value
+	if sizeDiff > 0 {
+		for index, value := range raw {
+			buffer[sizeDiff+index] = value
+		}
+	} else {
+		buffer = raw[0-sizeDiff:]
 	}
+
 	return int64(binary.BigEndian.Uint64(buffer))
 }
 
@@ -260,3 +265,7 @@ func logDebug(format string, v ...interface{}) {
 		log.Printf(format, v...)
 	}
 }
+
+// 010800ff 65 00 0101 8001 621e 5203 69 000000000000000001
+// 010801ff 01 01 621e 5203 69 000000000000000001
+// 020800ff 01 01 621e 5203 69 000000000000000201
