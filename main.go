@@ -233,7 +233,7 @@ func extractMeterReadings(message []byte) []meterReading {
 
 		if size > 0 {
 			logDebug("Decoded size %d", size)
-			value := float64(decodeBytes(data[3:3+size])) / float64(options.Factor)
+			value := float64(decodeBytes(data[3:3+size-1])) / float64(options.Factor)
 			logDebug("Decoded value %f", value)
 			newReading := meterReading{name: obis, value: value}
 			result = append(result, newReading)
