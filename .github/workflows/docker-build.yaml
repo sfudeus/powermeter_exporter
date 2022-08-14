@@ -1,4 +1,4 @@
-name: Docker Build Image
+name: Docker Build Main
 on:
   push:
     branches:
