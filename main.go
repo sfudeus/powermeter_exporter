@@ -32,7 +32,7 @@ var options struct {
 	MqttPort                 int64  `long:"mqttPort" description:"MQTT port to send data to (optional)" default:"1883"`
 	MqttTls                  bool   `long:"mqttTls" description:"Activate TLS for MQTT"`
 	MqttTlsInsecure          bool   `long:"mqttTlsInsecure" description:"Allow insecure TLS for MQTT"`
-	MqttTopicPrefix          string `long:"mqttTopicPrefix" description:"Topic prefix for MQTT" default:"isg"`
+	MqttTopicPrefix          string `long:"mqttTopicPrefix" description:"Topic prefix for MQTT" default:"powermeter"`
 	MqttDiscoveryTopicPrefix string `long:"mqttDiscoveryTopicPrefix" description:"Topic prefix for homeassistant discovery" default:"homeassistant"`
 	MqttUser                 string `long:"mqttUser" description:"Username to use for the MQTT connection" env:"MQTT_USER"`
 	MqttPassword             string `long:"mqttPassword" description:"Password to use for the MQTT connection" env:"MQTT_PASSWORD"`
@@ -103,8 +103,10 @@ func main() {
 			port = openConnection()
 			defer closeConnection()
 		}
+		iteration := 0
 		for {
-			ok := gatherData()
+			ok := gatherData(iteration)
+			iteration++
 			if !ok && options.KeepAlive {
 				log.Printf("Data Gathering failed, resetting port")
 				closeConnection()
@@ -192,7 +194,7 @@ func readUntil(startSequence []byte, stopSequence []byte) []byte {
 	return result[:finalStopIdx+len(stopSequence)]
 }
 
-func gatherData() bool {
+func gatherData(iteration int) bool {
 	timer := prometheus.NewTimer(gatheringDuration.WithLabelValues(options.MeterName))
 	defer timer.ObserveDuration()
 
@@ -212,7 +214,7 @@ func gatherData() bool {
 	for _, meterReading := range extractMeterReadings(message) {
 		log.Printf("Recording meter %s with value %f", meterReading.name, meterReading.value)
 		gaugeReading.WithLabelValues(options.MeterName, meterReading.name).Set(meterReading.value)
-		publishData(meterReading)
+		publishData(meterReading, iteration)
 	}
 	return true
 }

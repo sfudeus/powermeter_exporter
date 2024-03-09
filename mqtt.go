@@ -11,8 +11,6 @@ import (
 )
 
 var mqttClient mqtt.Client
-var discoveryNodeId string
-var iteration int
 
 var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
 	log.Info("MQTT connected")
@@ -44,56 +42,29 @@ func connectMqtt() {
 	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
 		log.Errorf("Connect to MQTT failed: %s", token.Error())
 	}
-	// initHomeAssistant()
-}
-
-func generateDiscoveryTopic(deviceType string, identifier string) string {
-	return strings.Join([]string{options.MqttDiscoveryTopicPrefix, deviceType, discoveryNodeId, identifier, "config"}, "/")
 }
 
 func generateDevice() map[string]interface{} {
 	return map[string]interface{}{
-		"identifiers":  []string{discoveryNodeId},
-		"manufacturer": "Stiebel Eltron",
-		"name":         "ISG",
-		"model":        "LWZ",
+		"identifiers": []string{options.MeterName},
+		"name":        "Powermeter",
 	}
 }
 
-func mapUnitToDeviceClass(unit string) interface{} {
+func sendDiscoveryData(identifier string, stateTopic string) {
 
-	switch unit {
-	case "°C":
-		return "temperature"
-	case "Hz":
-		return "frequency"
-	case "bar":
-		return "pressure"
-	case "%":
-		return "humidity"
-	case "kWh":
-		return "energy"
-	default:
-		return nil
-	}
-}
+	oid := strings.Replace(identifier, ".", "_", -1)
 
-func sendDiscoveryData(identifier string, stateTopic string, unit string) {
-
-	if len(unit) == 0 {
-		return
-	}
-
-	discoveryTopic := strings.Join([]string{options.MqttDiscoveryTopicPrefix, "sensor", discoveryNodeId, identifier, "config"}, "/")
+	discoveryTopic := strings.Join([]string{options.MqttDiscoveryTopicPrefix, "sensor", options.MeterName, oid, "config"}, "/")
 
 	sensorConfigPayload := map[string]interface{}{
-		"device_class":        mapUnitToDeviceClass(unit),
+		"device_class":        "energy",
+		"state_class":         "total_increasing",
 		"state_topic":         stateTopic,
-		"unit_of_measurement": unit,
-		"value_template":      "{{ value_json.Value }}",
+		"unit_of_measurement": "kWh",
 		"name":                identifier,
-		"unique_id":           discoveryNodeId + "_" + identifier,
-		"object_id":           discoveryNodeId + "_" + identifier,
+		"unique_id":           options.MeterName + "_" + oid,
+		"object_id":           options.MeterName + "_" + oid,
 		"enabled_by_default":  "true",
 		"device":              generateDevice(),
 	}
@@ -102,9 +73,12 @@ func sendDiscoveryData(identifier string, stateTopic string, unit string) {
 	mqttClient.Publish(discoveryTopic, 0, false, discoveryContent)
 }
 
-func publishData(reading meterReading) {
+func publishData(reading meterReading, iteration int) {
+	withDiscoveryData := (iteration%10 == 0)
+	log.Debugf("publishing in iteration %d, with discovery set to %t", iteration, withDiscoveryData)
+
 	topic := fmt.Sprintf("%s/%s/%s", options.MqttTopicPrefix, options.MeterName, reading.name)
-	if mqttClient.IsConnected() {
+	if mqttClient != nil && mqttClient.IsConnected() {
 		log.Debugf("Publishing %f to %s", reading.value, topic)
 		t := mqttClient.Publish(topic, 0, false, fmt.Sprintf("%f", reading.value))
 		go func() {
@@ -113,6 +87,11 @@ func publishData(reading meterReading) {
 				log.Error(t.Error()) // Use your preferred logging technique (or just fmt.Printf)
 			}
 		}()
+
+		if withDiscoveryData {
+			sendDiscoveryData(reading.name, topic)
+		}
+
 	} else {
 		log.Debugf("Not publishing to %s, not connected", topic)
 	}
