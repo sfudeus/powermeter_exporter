@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"time"
@@ -16,18 +15,27 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	log "github.com/sirupsen/logrus"
 )
 
 var port io.ReadWriteCloser
 
 var options struct {
-	Port      int64  `long:"port" default:"8080" description:"The address to listen on for HTTP requests." env:"EXPORTER_PORT"`
-	Interval  int64  `long:"interval" default:"60" env:"INTERVAL" description:"The frequency in seconds in which to gather data"`
-	Device    string `long:"device" default:"/dev/irmeter0" description:"The device to read on"`
-	MeterName string `long:"metername" description:"The name of your meter, to uniquely name them if you have multiple"`
-	Factor    int64  `long:"factor" description:"Reduction factor for all readings" default:"1"`
-	Debug     bool   `long:"debug" description:"Activate debug mode"`
-	KeepAlive bool   `long:"keepalive" description:"When true, keep tty connection open between reads"`
+	Port                     int64  `long:"port" default:"8080" description:"The address to listen on for HTTP requests." env:"EXPORTER_PORT"`
+	Interval                 int64  `long:"interval" default:"60" env:"INTERVAL" description:"The frequency in seconds in which to gather data"`
+	Device                   string `long:"device" default:"/dev/irmeter0" description:"The device to read on"`
+	MeterName                string `long:"metername" description:"The name of your meter, to uniquely name them if you have multiple"`
+	Factor                   int64  `long:"factor" description:"Reduction factor for all readings" default:"1"`
+	Debug                    bool   `long:"debug" description:"Activate debug mode"`
+	KeepAlive                bool   `long:"keepalive" description:"When true, keep tty connection open between reads"`
+	MqttHost                 string `long:"mqttHost" description:"MQTT host to send data to (optional)"`
+	MqttPort                 int64  `long:"mqttPort" description:"MQTT port to send data to (optional)" default:"1883"`
+	MqttTls                  bool   `long:"mqttTls" description:"Activate TLS for MQTT"`
+	MqttTlsInsecure          bool   `long:"mqttTlsInsecure" description:"Allow insecure TLS for MQTT"`
+	MqttTopicPrefix          string `long:"mqttTopicPrefix" description:"Topic prefix for MQTT" default:"powermeter"`
+	MqttDiscoveryTopicPrefix string `long:"mqttDiscoveryTopicPrefix" description:"Topic prefix for homeassistant discovery" default:"homeassistant"`
+	MqttUser                 string `long:"mqttUser" description:"Username to use for the MQTT connection" env:"MQTT_USER"`
+	MqttPassword             string `long:"mqttPassword" description:"Password to use for the MQTT connection" env:"MQTT_PASSWORD"`
 }
 
 var (
@@ -82,13 +90,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	if options.Debug {
+		log.SetLevel(log.DebugLevel)
+	}
+
+	if len(options.MqttHost) > 0 {
+		connectMqtt()
+	}
+
 	go func() {
 		if options.KeepAlive {
 			port = openConnection()
 			defer closeConnection()
 		}
+		iteration := 0
 		for {
-			ok := gatherData()
+			ok := gatherData(iteration)
+			iteration++
 			if !ok && options.KeepAlive {
 				log.Printf("Data Gathering failed, resetting port")
 				closeConnection()
@@ -176,7 +194,7 @@ func readUntil(startSequence []byte, stopSequence []byte) []byte {
 	return result[:finalStopIdx+len(stopSequence)]
 }
 
-func gatherData() bool {
+func gatherData(iteration int) bool {
 	timer := prometheus.NewTimer(gatheringDuration.WithLabelValues(options.MeterName))
 	defer timer.ObserveDuration()
 
@@ -196,6 +214,7 @@ func gatherData() bool {
 	for _, meterReading := range extractMeterReadings(message) {
 		log.Printf("Recording meter %s with value %f", meterReading.name, meterReading.value)
 		gaugeReading.WithLabelValues(options.MeterName, meterReading.name).Set(meterReading.value)
+		publishData(meterReading, iteration)
 	}
 	return true
 }
@@ -262,7 +281,7 @@ func decodeBytes(raw []byte) int64 {
 
 func logDebug(format string, v ...interface{}) {
 	if options.Debug {
-		log.Printf(format, v...)
+		log.Debugf(format, v...)
 	}
 }
 
