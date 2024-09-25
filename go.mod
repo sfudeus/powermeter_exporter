@@ -4,7 +4,7 @@ require (
 	github.com/eclipse/paho.mqtt.golang v1.5.0
 	github.com/jacobsa/go-serial v0.0.0-20180131005756-15cf729a72d4
 	github.com/jessevdk/go-flags v1.6.1
-	github.com/prometheus/client_golang v1.20.3
+	github.com/prometheus/client_golang v1.20.4
 	github.com/sirupsen/logrus v1.9.3
 )
 
