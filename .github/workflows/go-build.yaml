@@ -21,3 +21,4 @@ jobs:
       - env:
           CGO_ENABLED: "0"
         run: go build -o powermeter_exporter
+      - run: go test -v ./...

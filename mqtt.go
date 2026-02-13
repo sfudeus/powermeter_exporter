@@ -103,8 +103,12 @@ func publishData(reading meterReading, iteration int) {
 	withDiscoveryData := (iteration%10 == 0)
 	log.Debugf("publishing in iteration %d, with discovery set to %t", iteration, withDiscoveryData)
 
-	if mqttClient == nil || !mqttClient.IsConnected() {
-		log.Info("MQTTClient not initialized or disconnected, reconnecting")
+	if mqttClient == nil {
+		log.Debug("MQTTClient not initialized, skipping")
+		return
+	}
+	if !mqttClient.IsConnected() {
+		log.Info("MQTTClient disconnected, reconnecting")
 		connectMqtt()
 	}
 
