@@ -1,9 +1,6 @@
 package main // import "github.com/sfudeus/powermeter_exporter"
 
 import (
-	"bytes"
-	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +23,7 @@ var options struct {
 	Device                   string `long:"device" default:"/dev/irmeter0" description:"The device to read on"`
 	MeterName                string `long:"metername" description:"The name of your meter, to uniquely name them if you have multiple"`
 	Factor                   int64  `long:"factor" description:"Reduction factor for all readings" default:"1"`
+	MaxValue                 int64  `long:"maxValue" description:"Maximum value for readings, to prevent overflows" default:"10000000"`
 	Debug                    bool   `long:"debug" description:"Activate debug mode"`
 	KeepAlive                bool   `long:"keepalive" description:"When true, keep tty connection open between reads"`
 	MqttHost                 string `long:"mqttHost" description:"MQTT host to send data to (optional)"`
@@ -149,51 +147,6 @@ func closeConnection() {
 	port.Close()
 }
 
-func readUntil(startSequence []byte, stopSequence []byte) []byte {
-	buffer := make([]byte, 250)
-	preamble := make([]byte, 0, 1024)
-	result := make([]byte, 0, 1024)
-
-	// First scan for start delimiter
-	for !bytes.Contains(preamble, startSequence) {
-		c, err := port.Read(buffer)
-		if err != nil {
-			log.Printf("Read error: %v", err)
-			return nil
-		}
-		logDebug("Read %d bytes", c)
-		logDebug("%x", buffer[:c])
-		preamble = append(preamble, buffer[:c]...)
-		logDebug("appended preamble is now %d bytes", len(preamble))
-	}
-	startIndex := bytes.Index(preamble, startSequence)
-	log.Printf("Start sequence begins at byte %d of preamble", startIndex)
-	result = preamble[startIndex:]
-	log.Printf("Starting result with %d initial bytes from the preamble", len(result))
-
-	// Scan for termination sequence, keep all on between
-	for !bytes.Contains(result, stopSequence) {
-		c, err := port.Read(buffer)
-		if err != nil {
-			log.Printf("Read error: %v", err)
-			return nil
-		}
-		logDebug("Read %d bytes", c)
-		logDebug(hex.EncodeToString(buffer[:c]))
-		if bytes.Contains(buffer[:c], stopSequence) {
-			idx := bytes.Index(buffer[:c], stopSequence)
-			result = append(result, buffer[:idx+len(stopSequence)]...)
-			log.Printf("Last read contained delimiter at %d, skipping %d bytes, returning result with %d bytes", idx, c-idx, len(result))
-			return result
-		}
-		result = append(result, buffer[:c]...)
-		logDebug("appended result is now %d bytes", len(result))
-	}
-
-	finalStopIdx := bytes.Index(result, stopSequence)
-	return result[:finalStopIdx+len(stopSequence)]
-}
-
 func gatherData(iteration int) bool {
 	timer := prometheus.NewTimer(gatheringDuration.WithLabelValues(options.MeterName))
 	defer timer.ObserveDuration()
@@ -204,87 +157,23 @@ func gatherData(iteration int) bool {
 	}
 
 	log.Println("Gathering metrics")
-	message := readUntil(mustDecodeStringToHex("1b1b1b1b01010101"), mustDecodeStringToHex("1b1b1b1b1a"))
-	if message == nil {
-		log.Printf("Failed to read message, skipping")
+	message, err := readMessage(port)
+	if err != nil {
+		log.Printf("Failed to read message, skipping because of %v", err)
 		return false
 	}
-	logDebug("Read full message %s", hex.EncodeToString(message))
+	logDebug("Read full message\n%s\n", formatHexBytes(message, 32))
 
-	for _, meterReading := range extractMeterReadings(message) {
+	smlListResponse, err := extractListResponse(message)
+	if err != nil {
+		log.Printf("Failed to extract list response from message, skipping: %v", err)
+		return false
+	}
+
+	for _, meterReading := range extractMeterReadings(smlListResponse) {
 		log.Printf("Recording meter %s with value %f", meterReading.name, meterReading.value)
 		gaugeReading.WithLabelValues(options.MeterName, meterReading.name).Set(meterReading.value)
 		publishData(meterReading, iteration)
 	}
 	return true
 }
-
-func mustDecodeStringToHex(data string) []byte {
-	res, err := hex.DecodeString(data)
-	if err != nil {
-		log.Panicf("Decoding static %s to hex failed", data)
-	}
-	return res
-}
-
-func extractMeterReadings(message []byte) []meterReading {
-	result := make([]meterReading, 0, 5)
-	// split on list start and obis prefix
-	dataSplice := bytes.Split(message, mustDecodeStringToHex("77070100"))
-	for _, data := range dataSplice[1:] {
-		logDebug("Decoding message %x", data)
-		if len(data) < 12 {
-			log.Printf("Data chunk too small, %d<12", len(data))
-			continue
-		}
-		obis := fmt.Sprintf("%d.%d.%d", data[0], data[1], data[2])
-		logDebug("Decoded obis %s", obis)
-		// split on unit defintion (Wh)
-		dataSplice2 := bytes.Split(data, mustDecodeStringToHex("621e"))
-
-		if len(dataSplice2) < 2 {
-			logDebug("Skipping obis entry without expected unit")
-			continue
-		}
-		data = dataSplice2[1]
-		logDebug("Decoding 2nd part of message %x", data)
-		size := data[2] & 0x0f
-
-		if size > 0 {
-			logDebug("Decoded size %d", size)
-			value := float64(decodeBytes(data[3:3+size-1])) / float64(options.Factor)
-			logDebug("Decoded value %f", value)
-			newReading := meterReading{name: obis, value: value}
-			result = append(result, newReading)
-		} else {
-			logDebug("Skipping message because of undecoded size")
-		}
-	}
-	return result
-}
-
-func decodeBytes(raw []byte) int64 {
-
-	logDebug("Decoding bytes %x", raw)
-	buffer := make([]byte, 8)
-	sizeDiff := len(buffer) - len(raw)
-	if sizeDiff > 0 {
-		for index, value := range raw {
-			buffer[sizeDiff+index] = value
-		}
-	} else {
-		buffer = raw[0-sizeDiff:]
-	}
-
-	return int64(binary.BigEndian.Uint64(buffer))
-}
-
-func logDebug(format string, v ...interface{}) {
-	if options.Debug {
-		log.Debugf(format, v...)
-	}
-}
-
-// 010800ff 65 00 0101 8001 621e 5203 69 000000000000000001
-// 010801ff 01 01 621e 5203 69 000000000000000001
-// 020800ff 01 01 621e 5203 69 000000000000000201
