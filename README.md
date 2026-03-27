@@ -24,3 +24,8 @@ Docker image
 ---
 
 A recent docker image (multiarch amd64,arm/v7) is automatically built for each release at sfudeus/powermeter_exporter:$TAG.
+
+# Alternatives
+
+If you have MQTT anyway and possibly consume this in home-assistant, consider using [sml2mqtt](https://pypi.org/project/sml2mqtt/) instead. 
+A docker image for that is available at e.g. https://github.com/spacemanspiff2007/sml2mqtt.
